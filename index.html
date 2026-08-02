@@ -1166,7 +1166,7 @@
 
   function renderCheckoutForm(){
     const subtotal = state.cart.reduce((s,i)=>s+i.price*i.qty,0);
-    const shipping = subtotal > 0 ? 4.5 : 0;
+    const shipping = subtotal > 0 ? 2.0 : 0;
     const total = subtotal + shipping;
 
     modalContent.innerHTML = `
@@ -1217,7 +1217,7 @@
       submitBtn.textContent = 'Placing order…';
 
       const subtotal = state.cart.reduce((s,i)=>s+i.price*i.qty,0);
-      const shipping = subtotal > 0 ? 4.5 : 0;
+      const shipping = subtotal > 0 ? 2.0 : 0;
       const total = subtotal + shipping;
 
       const payload = {

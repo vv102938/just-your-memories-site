@@ -1,12 +1,9 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { getSiteUrl } = require('./config');
 
 const UPLOADS_DIR = path.join(__dirname, 'uploads', 'orders');
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-
-function getSiteUrl() {
-  return (process.env.SITE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
-}
 
 async function ensureUploadsDir() {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });

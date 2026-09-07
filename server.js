@@ -31,7 +31,7 @@ const {
   RESEND_COOLDOWN_MS
 } = require('./auth');
 
-const PORT = process.env.PORT || 3000;
+const { getSiteUrl, PORT } = require('./config');
 const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!MONGODB_URI) {
@@ -964,7 +964,7 @@ async function start() {
   ]);
 
   const server = app.listen(PORT, () => {
-    console.log(`Just Your Memories running at http://localhost:${PORT}`);
+    console.log(`Just Your Memories running at ${getSiteUrl()}`);
     if (!isAdminConfigured()) {
       console.warn('Admin login not configured — set ADMIN_PASSWORD (and optional ADMIN_EMAIL) in .env.');
     }

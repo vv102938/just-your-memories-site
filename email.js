@@ -1,6 +1,6 @@
 const nodemailer = require('nodemailer');
+const { getSiteUrl } = require('./config');
 
-const SITE_URL = (process.env.SITE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
 const MAIL_FROM = process.env.MAIL_FROM || process.env.SMTP_USER || 'justyourmemories@gmail.com';
 
 let transporter;
@@ -109,7 +109,7 @@ async function sendOrderConfirmationEmail(order) {
     return false;
   }
 
-  const confirmUrl = `${SITE_URL}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
+  const confirmUrl = `${getSiteUrl()}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
   const message = buildConfirmationEmail(order, confirmUrl);
   await transport.sendMail(message);
   return true;
@@ -174,5 +174,5 @@ module.exports = {
   isMailConfigured,
   sendOrderConfirmationEmail,
   sendSignupVerificationEmail,
-  SITE_URL
+  getSiteUrl
 };

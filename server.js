@@ -8,7 +8,7 @@ const zipcodes = require('zipcodes');
 const mongoose = require('mongoose');
 const { connectDatabase, disconnectDatabase } = require('./db/connect');
 const { User, Order, SignupVerification } = require('./models');
-const { isMailConfigured, queueOrderConfirmationEmail, queueSignupVerificationEmail, warmMailConnection } = require('./email');
+const { isMailConfigured, sendOrderConfirmationEmail, sendSignupVerificationEmail, warmMailConnection, getMailStatus } = require('./email');
 const { ensureUploadsDir, saveOrderItemImages } = require('./images');
 const {
   hashPassword,
@@ -382,7 +382,8 @@ app.post('/api/auth/signup', async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    if (!queueSignupVerificationEmail(validated.name, validated.email, code)) {
+    const sent = await sendSignupVerificationEmail(validated.name, validated.email, code);
+    if (!sent) {
       return res.status(503).json({ error: 'Could not send the verification email. Try again in a moment.' });
     }
 
@@ -522,7 +523,8 @@ app.post('/api/auth/signup/resend', async (req, res) => {
       }
     );
 
-    if (!queueSignupVerificationEmail(pending.name, email, code)) {
+    const sent = await sendSignupVerificationEmail(pending.name, email, code);
+    if (!sent) {
       return res.status(503).json({ error: 'Could not send the verification email. Try again in a moment.' });
     }
 
@@ -804,7 +806,8 @@ app.get('/api/health', async (_req, res) => {
       return res.status(503).json({ ok: false, error: 'Database unavailable' });
     }
     await mongoose.connection.db.admin().command({ ping: 1 });
-    res.json({ ok: true, database: 'connected' });
+    const mail = await getMailStatus();
+    res.json({ ok: true, database: 'connected', mail });
   } catch (err) {
     res.status(503).json({ ok: false, error: 'Database unavailable' });
   }
@@ -856,7 +859,7 @@ app.post('/api/orders', async (req, res) => {
     });
 
     const orderPlain = asPlain(order);
-    const confirmationEmailSent = queueOrderConfirmationEmail(orderPlain);
+    const confirmationEmailSent = await sendOrderConfirmationEmail(orderPlain);
 
     res.status(201).json({
       ...sanitizeOrder(orderPlain),

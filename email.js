@@ -1,40 +1,35 @@
 const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const { getSiteUrl } = require('./config');
 
-const MAIL_FROM = process.env.MAIL_FROM || process.env.SMTP_USER || 'justyourmemories@gmail.com';
+function trimEnv(name) {
+  const value = process.env[name];
+  return value == null ? '' : String(value).trim();
+}
 
-let transporter;
+function isResendConfigured() {
+  return Boolean(trimEnv('RESEND_API_KEY'));
+}
+
+function isSmtpConfigured() {
+  return Boolean(trimEnv('SMTP_HOST') && trimEnv('SMTP_USER') && trimEnv('SMTP_PASS'));
+}
 
 function isMailConfigured() {
-  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  return isResendConfigured() || isSmtpConfigured();
+}
+
+function getMailFrom() {
+  const configured = trimEnv('MAIL_FROM');
+  if (configured) return configured;
+  const smtpUser = trimEnv('SMTP_USER');
+  if (smtpUser) return `"Just Your Memories" <${smtpUser}>`;
+  return '"Just Your Memories" <justyourmemories@gmail.com>';
 }
 
 function getSmtpPort() {
-  return Number(process.env.SMTP_PORT || 587);
-}
-
-function getTransporter() {
-  if (!isMailConfigured()) return null;
-  if (!transporter) {
-    const port = getSmtpPort();
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port,
-      secure: port === 465 || process.env.SMTP_SECURE === 'true',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      },
-      connectionTimeout: 15_000,
-      greetingTimeout: 15_000,
-      socketTimeout: 20_000
-    });
-
-    transporter.on('error', (err) => {
-      console.error('SMTP transporter error:', err.message);
-    });
-  }
-  return transporter;
+  const port = Number(trimEnv('SMTP_PORT') || 587);
+  return Number.isFinite(port) ? port : 587;
 }
 
 function logMailError(label, err) {
@@ -47,24 +42,129 @@ function logMailError(label, err) {
   }
 }
 
-async function warmMailConnection() {
-  const transport = getTransporter();
-  if (!transport) return false;
-  await transport.verify();
+function buildSmtpTransport(port) {
+  const user = trimEnv('SMTP_USER');
+  const pass = trimEnv('SMTP_PASS');
+  const host = trimEnv('SMTP_HOST');
+  const timeouts = {
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 25_000
+  };
+
+  if (host === 'smtp.gmail.com') {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user, pass },
+      ...timeouts
+    });
+  }
+
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465 || trimEnv('SMTP_SECURE') === 'true',
+    auth: { user, pass },
+    ...timeouts
+  });
+}
+
+async function sendViaSmtp(message, label) {
+  if (!isSmtpConfigured()) return false;
+
+  const ports = [...new Set([getSmtpPort(), 587, 465])];
+  let lastError = null;
+
+  for (const port of ports) {
+    const transport = buildSmtpTransport(port);
+    try {
+      await transport.sendMail({
+        from: getMailFrom(),
+        to: message.to,
+        subject: message.subject,
+        text: message.text,
+        html: message.html
+      });
+      transport.close();
+      return true;
+    } catch (err) {
+      lastError = err;
+      logMailError(`${label} (SMTP port ${port})`, err);
+      transport.close();
+    }
+  }
+
+  if (lastError) {
+    logMailError(label, lastError);
+  }
+  return false;
+}
+
+async function sendViaResend(message, label) {
+  if (!isResendConfigured()) return false;
+
+  const resend = new Resend(trimEnv('RESEND_API_KEY'));
+  const { error } = await resend.emails.send({
+    from: getMailFrom(),
+    to: message.to,
+    subject: message.subject,
+    html: message.html,
+    text: message.text
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Resend rejected the email.');
+  }
+
   return true;
+}
+
+async function deliverMail(message, label) {
+  if (isResendConfigured()) {
+    try {
+      return await sendViaResend(message, label);
+    } catch (err) {
+      logMailError(`${label} (Resend)`, err);
+      if (!isSmtpConfigured()) return false;
+    }
+  }
+
+  return sendViaSmtp(message, label);
+}
+
+async function warmMailConnection() {
+  if (isResendConfigured()) return true;
+  if (!isSmtpConfigured()) return false;
+
+  const transport = buildSmtpTransport(getSmtpPort());
+  try {
+    await transport.verify();
+    return true;
+  } finally {
+    transport.close();
+  }
 }
 
 async function getMailStatus() {
   if (!isMailConfigured()) {
-    return { configured: false, ready: false };
+    return { configured: false, ready: false, provider: null };
+  }
+
+  if (isResendConfigured()) {
+    return {
+      configured: true,
+      ready: true,
+      provider: 'resend',
+      smtpFallback: isSmtpConfigured()
+    };
   }
 
   try {
     await warmMailConnection();
-    return { configured: true, ready: true };
+    return { configured: true, ready: true, provider: 'smtp' };
   } catch (err) {
     logMailError('SMTP verify', err);
-    return { configured: true, ready: false, error: err.message };
+    return { configured: true, ready: false, provider: 'smtp', error: err.message };
   }
 }
 
@@ -129,7 +229,6 @@ function buildConfirmationEmail(order, confirmUrl) {
 </html>`;
 
   return {
-    from: `"Just Your Memories" <${MAIL_FROM}>`,
     to: order.customer.email,
     subject: `Confirm your order ${order.orderNumber}`,
     text,
@@ -146,21 +245,14 @@ function escapeHtml(str) {
 }
 
 async function sendOrderConfirmationEmail(order) {
-  const transport = getTransporter();
-  if (!transport) {
-    console.warn('Email not configured — set SMTP_HOST, SMTP_USER, and SMTP_PASS in .env to send confirmation emails.');
+  if (!isMailConfigured()) {
+    console.warn('Email not configured — set RESEND_API_KEY or SMTP settings to send confirmation emails.');
     return false;
   }
 
-  try {
-    const confirmUrl = `${getSiteUrl()}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
-    const message = buildConfirmationEmail(order, confirmUrl);
-    await transport.sendMail(message);
-    return true;
-  } catch (err) {
-    logMailError(`Order confirmation email (${order.orderNumber})`, err);
-    return false;
-  }
+  const confirmUrl = `${getSiteUrl()}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
+  const message = buildConfirmationEmail(order, confirmUrl);
+  return deliverMail(message, `Order confirmation email (${order.orderNumber})`);
 }
 
 function buildSignupVerificationEmail(name, email, code) {
@@ -198,7 +290,6 @@ function buildSignupVerificationEmail(name, email, code) {
 </html>`;
 
   return {
-    from: `"Just Your Memories" <${MAIL_FROM}>`,
     to: email,
     subject: `${code} is your Just Your Memories verification code`,
     text,
@@ -207,20 +298,13 @@ function buildSignupVerificationEmail(name, email, code) {
 }
 
 async function sendSignupVerificationEmail(name, email, code) {
-  const transport = getTransporter();
-  if (!transport) {
+  if (!isMailConfigured()) {
     console.warn('Email not configured — cannot send signup verification emails.');
     return false;
   }
 
-  try {
-    const message = buildSignupVerificationEmail(name, email, code);
-    await transport.sendMail(message);
-    return true;
-  } catch (err) {
-    logMailError(`Signup verification email (${email})`, err);
-    return false;
-  }
+  const message = buildSignupVerificationEmail(name, email, code);
+  return deliverMail(message, `Signup verification email (${email})`);
 }
 
 module.exports = {

@@ -5,7 +5,9 @@ const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
 const zipcodes = require('zipcodes');
-const { MongoClient, ObjectId } = require('mongodb');
+const mongoose = require('mongoose');
+const { connectDatabase, disconnectDatabase } = require('./db/connect');
+const { User, Order, SignupVerification } = require('./models');
 const { sendOrderConfirmationEmail, sendSignupVerificationEmail, isMailConfigured } = require('./email');
 const { ensureUploadsDir, saveOrderItemImages } = require('./images');
 const {
@@ -41,10 +43,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
-let db;
-let ordersCollection;
-let usersCollection;
-let signupVerificationsCollection;
+function asPlain(doc) {
+  if (!doc) return doc;
+  return typeof doc.toObject === 'function' ? doc.toObject() : doc;
+}
 
 function generateOrderNumber() {
   return 'JYM-' + Math.floor(100000 + Math.random() * 899999);
@@ -306,14 +308,14 @@ async function resolveUserShipping(user) {
   if (user?.shipping?.address) {
     return user.shipping;
   }
-  if (!user?.email || !ordersCollection) {
+  if (!user?.email) {
     return null;
   }
 
-  const order = await ordersCollection.findOne(
-    { 'customer.email': user.email },
-    { sort: { createdAt: -1 }, projection: { customer: 1 } }
-  );
+  const order = await Order.findOne({ 'customer.email': user.email })
+    .sort({ createdAt: -1 })
+    .select('customer')
+    .lean();
   const customer = order?.customer;
   if (!customer?.address || !customer?.city || !customer?.state || !customer?.zip) {
     return null;
@@ -326,11 +328,8 @@ async function resolveUserShipping(user) {
     zip: String(customer.zip).trim()
   };
 
-  if (usersCollection && user._id) {
-    await usersCollection.updateOne(
-      { _id: user._id },
-      { $set: { shipping } }
-    );
+  if (user._id) {
+    await User.updateOne({ _id: user._id }, { $set: { shipping } });
   }
 
   return shipping;
@@ -357,7 +356,7 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(400).json({ error: emailErr });
     }
 
-    const existing = await usersCollection.findOne({ email: validated.email });
+    const existing = await User.findOne({ email: validated.email }).lean();
     if (existing) {
       return res.status(409).json({ error: 'An account with that email already exists. Try logging in.' });
     }
@@ -371,15 +370,14 @@ app.post('/api/auth/signup', async (req, res) => {
       shipping: shippingValidated.shipping,
       codeHash: hashVerificationCode(code),
       attempts: 0,
-      createdAt: now,
       expiresAt: new Date(now.getTime() + VERIFICATION_CODE_TTL_MS),
       lastSentAt: now
     };
 
-    await signupVerificationsCollection.updateOne(
+    await SignupVerification.findOneAndUpdate(
       { email: validated.email },
-      { $set: pending },
-      { upsert: true }
+      pending,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
     const sent = await sendSignupVerificationEmail(validated.name, validated.email, code);
@@ -409,26 +407,23 @@ app.post('/api/auth/signup/verify', async (req, res) => {
       return res.status(400).json({ error: 'Enter the 6-digit code from your email.' });
     }
 
-    const pending = await signupVerificationsCollection.findOne({ email });
+    const pending = await SignupVerification.findOne({ email }).lean();
     if (!pending) {
       return res.status(404).json({ error: 'No sign-up in progress for that email. Start sign up again.' });
     }
 
     if (pending.expiresAt <= new Date()) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(410).json({ error: 'That code expired. Start sign up again to get a new one.' });
     }
 
     if (pending.attempts >= MAX_VERIFY_ATTEMPTS) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(429).json({ error: 'Too many wrong attempts. Start sign up again to get a new code.' });
     }
 
     if (!verifyVerificationCode(code, pending.codeHash)) {
-      await signupVerificationsCollection.updateOne(
-        { email },
-        { $inc: { attempts: 1 } }
-      );
+      await SignupVerification.updateOne({ email }, { $inc: { attempts: 1 } });
       const remaining = MAX_VERIFY_ATTEMPTS - pending.attempts - 1;
       return res.status(400).json({
         error: remaining > 0
@@ -439,42 +434,40 @@ app.post('/api/auth/signup/verify', async (req, res) => {
 
     const nameErr = validateSignupName(pending.name);
     if (nameErr) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(400).json({ error: nameErr });
     }
 
     const emailErr = validateEmail(pending.email);
     if (emailErr) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(400).json({ error: emailErr });
     }
 
-    const existing = await usersCollection.findOne({ email });
+    const existing = await User.findOne({ email }).lean();
     if (existing) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(409).json({ error: 'An account with that email already exists. Try logging in.' });
     }
 
-    const user = {
+    const user = await User.create({
       name: pending.name,
       email: pending.email,
       passwordHash: pending.passwordHash,
-      shipping: pending.shipping || null,
+      shipping: pending.shipping || undefined,
       role: 'customer',
-      emailVerified: true,
-      createdAt: new Date()
-    };
-    const result = await usersCollection.insertOne(user);
-    await signupVerificationsCollection.deleteOne({ email });
+      emailVerified: true
+    });
+    await SignupVerification.deleteOne({ email });
 
     const token = createToken({
       role: 'customer',
-      userId: String(result.insertedId),
+      userId: String(user._id),
       email: user.email,
       name: user.name
     });
 
-    res.status(201).json(buildAuthResponse(user, token));
+    res.status(201).json(buildAuthResponse(asPlain(user), token));
   } catch (err) {
     console.error('POST /api/auth/signup/verify failed:', err);
     res.status(500).json({ error: 'Could not verify your email.' });
@@ -492,7 +485,7 @@ app.post('/api/auth/signup/resend', async (req, res) => {
       return res.status(400).json({ error: 'Email is required.' });
     }
 
-    const pending = await signupVerificationsCollection.findOne({ email });
+    const pending = await SignupVerification.findOne({ email }).lean();
     if (!pending) {
       return res.status(404).json({ error: 'No sign-up in progress for that email. Start sign up again.' });
     }
@@ -502,9 +495,9 @@ app.post('/api/auth/signup/resend', async (req, res) => {
       return res.status(400).json({ error: emailErr });
     }
 
-    const existing = await usersCollection.findOne({ email });
+    const existing = await User.findOne({ email }).lean();
     if (existing) {
-      await signupVerificationsCollection.deleteOne({ email });
+      await SignupVerification.deleteOne({ email });
       return res.status(409).json({ error: 'An account with that email already exists. Try logging in.' });
     }
 
@@ -516,7 +509,7 @@ app.post('/api/auth/signup/resend', async (req, res) => {
     }
 
     const code = generateVerificationCode();
-    await signupVerificationsCollection.updateOne(
+    await SignupVerification.updateOne(
       { email },
       {
         $set: {
@@ -558,7 +551,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.json({ token, role: 'admin', name: 'Admin', email });
     }
 
-    const user = await usersCollection.findOne({ email });
+    const user = await User.findOne({ email }).lean();
     if (!user || !verifyPassword(password, user.passwordHash)) {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
@@ -592,7 +585,7 @@ app.get('/api/auth/me', async (req, res) => {
   }
   if (data.userId) {
     try {
-      const user = await usersCollection.findOne({ _id: new ObjectId(data.userId) });
+      const user = await User.findById(data.userId).lean();
       if (user) {
         const shipping = await resolveUserShipping(user);
         return res.json({
@@ -639,7 +632,7 @@ app.patch('/api/auth/account', async (req, res) => {
     }
 
     if (hasShippingUpdate) {
-      const user = await usersCollection.findOne({ _id: new ObjectId(data.userId) });
+      const user = await User.findById(data.userId).lean();
       const shippingValidated = validateShippingFields({
         address: req.body?.address ?? user?.shipping?.address,
         city: req.body?.city ?? user?.shipping?.city,
@@ -661,7 +654,7 @@ app.patch('/api/auth/account', async (req, res) => {
         return res.status(400).json({ error: passwordErr });
       }
 
-      const user = await usersCollection.findOne({ _id: new ObjectId(data.userId) });
+      const user = await User.findById(data.userId).lean();
       if (!user || !verifyPassword(currentPassword, user.passwordHash)) {
         return res.status(401).json({ error: 'Current password is incorrect.' });
       }
@@ -672,17 +665,16 @@ app.patch('/api/auth/account', async (req, res) => {
       return res.status(400).json({ error: 'Nothing to update.' });
     }
 
-    const result = await usersCollection.findOneAndUpdate(
-      { _id: new ObjectId(data.userId) },
+    const savedUser = await User.findOneAndUpdate(
+      { _id: data.userId },
       { $set: updates },
-      { returnDocument: 'after' }
+      { new: true }
     );
 
-    if (!result) {
+    if (!savedUser) {
       return res.status(404).json({ error: 'Account not found.' });
     }
 
-    const savedUser = result.value ?? result;
     const token = createToken({
       role: savedUser.role || 'customer',
       userId: String(savedUser._id),
@@ -690,7 +682,7 @@ app.patch('/api/auth/account', async (req, res) => {
       name: savedUser.name
     });
 
-    res.json(buildAuthResponse(savedUser, token));
+    res.json(buildAuthResponse(asPlain(savedUser), token));
   } catch (err) {
     console.error('PATCH /api/auth/account failed:', err);
     res.status(500).json({ error: 'Could not update your account.' });
@@ -712,14 +704,14 @@ app.delete('/api/auth/account', async (req, res) => {
       return res.status(400).json({ error: 'Enter your password to delete your account.' });
     }
 
-    const user = await usersCollection.findOne({ _id: new ObjectId(data.userId) });
+    const user = await User.findById(data.userId);
     if (!user || !verifyPassword(password, user.passwordHash)) {
       return res.status(401).json({ error: 'Password is incorrect.' });
     }
 
-    await usersCollection.deleteOne({ _id: user._id });
+    await User.deleteOne({ _id: user._id });
     if (user.email) {
-      await signupVerificationsCollection.deleteMany({ email: user.email });
+      await SignupVerification.deleteMany({ email: user.email });
     }
 
     res.json({ ok: true });
@@ -731,11 +723,10 @@ app.delete('/api/auth/account', async (req, res) => {
 
 app.get('/api/admin/orders', requireAdmin, async (_req, res) => {
   try {
-    const orders = await ordersCollection
-      .find({})
+    const orders = await Order.find({})
       .sort({ createdAt: -1 })
       .limit(500)
-      .toArray();
+      .lean();
     res.json(orders.map(sanitizeAdminOrder));
   } catch (err) {
     console.error('GET /api/admin/orders failed:', err);
@@ -752,17 +743,17 @@ app.patch('/api/admin/orders/:orderNumber', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Invalid status.' });
     }
 
-    const result = await ordersCollection.findOneAndUpdate(
+    const order = await Order.findOneAndUpdate(
       { orderNumber },
-      { $set: { status, updatedAt: new Date() } },
-      { returnDocument: 'after' }
-    );
+      { $set: { status } },
+      { new: true }
+    ).lean();
 
-    if (!result) {
+    if (!order) {
       return res.status(404).json({ error: 'Order not found.' });
     }
 
-    res.json(sanitizeAdminOrder(result));
+    res.json(sanitizeAdminOrder(order));
   } catch (err) {
     console.error('PATCH /api/admin/orders/:orderNumber failed:', err);
     res.status(500).json({ error: 'Could not update order.' });
@@ -809,7 +800,10 @@ app.post('/api/validate-address', (req, res) => {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    await db.command({ ping: 1 });
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ ok: false, error: 'Database unavailable' });
+    }
+    await mongoose.connection.db.admin().command({ ping: 1 });
     res.json({ ok: true, database: 'connected' });
   } catch (err) {
     res.status(503).json({ ok: false, error: 'Database unavailable' });
@@ -849,7 +843,7 @@ app.post('/api/orders', async (req, res) => {
       return res.status(400).json({ error: imgErr.message || 'Could not save order photos.' });
     }
 
-    const order = {
+    const order = await Order.create({
       orderNumber,
       status: 'awaiting_confirmation',
       emailConfirmed: false,
@@ -858,21 +852,20 @@ app.post('/api/orders', async (req, res) => {
       items: savedItems,
       subtotal: Number(subtotal),
       shipping: Number(shipping),
-      total: Number(total),
-      createdAt: new Date()
-    };
+      total: Number(total)
+    });
 
-    await ordersCollection.insertOne(order);
+    const orderPlain = asPlain(order);
 
     let confirmationEmailSent = false;
     try {
-      confirmationEmailSent = await sendOrderConfirmationEmail(order);
+      confirmationEmailSent = await sendOrderConfirmationEmail(orderPlain);
     } catch (mailErr) {
       console.error('Confirmation email failed:', mailErr.message);
     }
 
     res.status(201).json({
-      ...sanitizeOrder(order),
+      ...sanitizeOrder(orderPlain),
       confirmationEmailSent
     });
   } catch (err) {
@@ -896,7 +889,7 @@ app.post('/api/orders/confirm', async (req, res) => {
       return res.status(400).json({ error: 'Enter a valid order number (e.g. JYM-482913).' });
     }
 
-    const order = await ordersCollection.findOne({ confirmationToken: token });
+    const order = await Order.findOne({ confirmationToken: token }).lean();
     if (!order) {
       return res.status(404).json({ error: 'This confirmation link is invalid or has already been used.' });
     }
@@ -909,7 +902,7 @@ app.post('/api/orders/confirm', async (req, res) => {
       return res.json({ ok: true, alreadyConfirmed: true, orderNumber: order.orderNumber });
     }
 
-    await ordersCollection.updateOne(
+    await Order.updateOne(
       { _id: order._id },
       {
         $set: {
@@ -942,7 +935,7 @@ app.get('/api/orders/:orderNumber', async (req, res) => {
       return res.status(400).json({ error: 'Order number is required.' });
     }
 
-    const order = await ordersCollection.findOne({ orderNumber });
+    const order = await Order.findOne({ orderNumber }).lean();
     if (!order) {
       return res.status(404).json({ error: 'No order found with that number.' });
     }
@@ -963,19 +956,12 @@ app.use(express.static(__dirname));
 
 async function start() {
   await ensureUploadsDir();
-  const client = new MongoClient(MONGODB_URI);
-  await client.connect();
-  db = client.db();
-  ordersCollection = db.collection('orders');
-  usersCollection = db.collection('users');
-  signupVerificationsCollection = db.collection('signup_verifications');
-  await ordersCollection.createIndex({ orderNumber: 1 }, { unique: true });
-  await ordersCollection.createIndex({ confirmationToken: 1 }, { sparse: true });
-  await ordersCollection.createIndex({ createdAt: -1 });
-  await ordersCollection.createIndex({ 'customer.email': 1 });
-  await usersCollection.createIndex({ email: 1 }, { unique: true });
-  await signupVerificationsCollection.createIndex({ email: 1 }, { unique: true });
-  await signupVerificationsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await connectDatabase(MONGODB_URI);
+  await Promise.all([
+    Order.syncIndexes(),
+    User.syncIndexes(),
+    SignupVerification.syncIndexes()
+  ]);
 
   const server = app.listen(PORT, () => {
     console.log(`Just Your Memories running at http://localhost:${PORT}`);
@@ -997,7 +983,7 @@ async function start() {
   });
 
   process.on('SIGINT', async () => {
-    await client.close();
+    await disconnectDatabase();
     process.exit(0);
   });
 }

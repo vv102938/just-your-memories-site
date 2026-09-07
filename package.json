@@ -6,6 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "restart": "node scripts/restart.js",
     "dev": "node server.js"
   },
   "engines": {
@@ -15,6 +16,13 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "mongodb": "^6.12.0"
+    "mongodb": "^6.12.0",
+    "nodemailer": "^6.10.1",
+    "nodemon": "^3.1.14",
+    "zipcodes": "^8.0.0"
+  },
+  "devDependencies": {
+    "mon": "^0.0.8",
+    "node": "^26.8.1"
   }
 }

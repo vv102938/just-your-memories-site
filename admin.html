@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Just Your Memories</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cream:#FBF2E2;
+    --paper:#FFFDF8;
+    --ink:#241A12;
+    --ink-soft:#5C4E40;
+    --magenta:#EF4F80;
+    --teal:#257C79;
+    --line:rgba(36,26,18,0.12);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:'Manrope',sans-serif;
+    color:var(--ink);
+    background:var(--cream);
+  }
+  header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    padding:18px 24px;
+    border-bottom:1px solid var(--line);
+    background:rgba(255,253,248,0.92);
+    position:sticky;
+    top:0;
+    z-index:10;
+  }
+  h1{
+    font-family:'Fraunces',serif;
+    margin:0;
+    font-size:1.5rem;
+  }
+  .sub{
+    margin:4px 0 0;
+    color:var(--ink-soft);
+    font-size:14px;
+  }
+  .actions{display:flex;gap:10px;flex-wrap:wrap;}
+  .btn{
+    border:none;
+    border-radius:10px;
+    padding:10px 16px;
+    font:inherit;
+    font-weight:600;
+    cursor:pointer;
+    text-decoration:none;
+    display:inline-flex;
+    align-items:center;
+  }
+  .btn-ghost{background:#fff;border:1px solid var(--line);color:var(--ink);}
+  .btn-primary{background:var(--magenta);color:#fff;}
+  main{padding:24px;max-width:1280px;margin:0 auto;}
+  .stats{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:12px;
+    margin-bottom:20px;
+  }
+  .stat{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:16px;
+  }
+  .stat .label{
+    font-family:'Space Mono',monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.1em;
+    color:var(--ink-soft);
+  }
+  .stat .num{font-size:1.6rem;font-weight:700;margin-top:6px;}
+  .toolbar{
+    display:flex;
+    gap:12px;
+    flex-wrap:wrap;
+    margin-bottom:16px;
+  }
+  input, select{
+    font:inherit;
+    padding:10px 12px;
+    border:1px solid var(--line);
+    border-radius:10px;
+    background:#fff;
+  }
+  input{min-width:220px;flex:1;}
+  table{
+    width:100%;
+    border-collapse:collapse;
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    overflow:hidden;
+  }
+  th,td{
+    padding:12px 14px;
+    text-align:left;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+    font-size:14px;
+  }
+  th{
+    font-family:'Space Mono',monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--ink-soft);
+    background:rgba(251,242,226,0.5);
+  }
+  tr:last-child td{border-bottom:none;}
+  .status{
+    display:inline-block;
+    padding:4px 8px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:700;
+    text-transform:capitalize;
+    background:rgba(37,124,121,0.12);
+    color:var(--teal);
+  }
+  .status.awaiting_confirmation{background:rgba(238,127,30,0.15);color:#a8560f;}
+  .status.cancelled{background:rgba(201,55,100,0.12);color:#9b1c44;}
+  .thumb{
+    width:48px;
+    height:48px;
+    object-fit:cover;
+    border-radius:8px;
+    border:1px solid var(--line);
+  }
+  .items{font-size:13px;color:var(--ink-soft);line-height:1.5;}
+  .empty,.error-box{
+    padding:32px;
+    text-align:center;
+    color:var(--ink-soft);
+    background:var(--paper);
+    border:1px dashed var(--line);
+    border-radius:var(--radius);
+  }
+  .error-box{color:#9b1c44;background:rgba(201,55,100,0.06);}
+  @media (max-width:900px){
+    table{display:block;overflow-x:auto;}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Orders dashboard</h1>
+    <p class="sub" id="adminGreeting">Just Your Memories admin</p>
+  </div>
+  <div class="actions">
+    <a href="account.html" class="btn btn-ghost">Account settings</a>
+    <a href="shop.html" class="btn btn-ghost">View shop</a>
+    <button class="btn btn-primary" id="logoutBtn" type="button">Log out</button>
+  </div>
+</header>
+
+<main>
+  <div class="stats" id="stats"></div>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="Search order #, name, or email…">
+    <select id="statusFilter">
+      <option value="">All statuses</option>
+      <option value="awaiting_confirmation">Awaiting confirmation</option>
+      <option value="pending">Pending</option>
+      <option value="printing">Printing</option>
+      <option value="shipped">Shipped</option>
+      <option value="completed">Completed</option>
+      <option value="cancelled">Cancelled</option>
+    </select>
+  </div>
+  <div id="content"><div class="empty">Loading orders…</div></div>
+</main>
+
+<script src="api-utils.js"></script>
+<script src="auth-client.js"></script>
+<script>
+(function(){
+  if (!requireAdminAccess()) return;
+
+  const auth = getAuth();
+  document.getElementById('adminGreeting').textContent = 'Signed in as ' + (auth.name || auth.email || 'Admin');
+
+  document.getElementById('logoutBtn').addEventListener('click', logout);
+
+  let orders = [];
+  const content = document.getElementById('content');
+  const searchInput = document.getElementById('search');
+  const statusFilter = document.getElementById('statusFilter');
+
+  const STATUS_OPTIONS = [
+    'awaiting_confirmation',
+    'pending',
+    'printing',
+    'shipped',
+    'completed',
+    'cancelled'
+  ];
+
+  function formatMoney(n) {
+    return '$' + Number(n || 0).toFixed(2);
+  }
+
+  function formatDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleString();
+  }
+
+  function renderStats(list) {
+    const counts = {};
+    STATUS_OPTIONS.forEach(s => { counts[s] = 0; });
+    list.forEach(o => { counts[o.status] = (counts[o.status] || 0) + 1; });
+    document.getElementById('stats').innerHTML = [
+      ['Total', list.length],
+      ['Awaiting confirm', counts.awaiting_confirmation],
+      ['Pending', counts.pending],
+      ['Printing', counts.printing],
+      ['Shipped', counts.shipped]
+    ].map(([label, num]) =>
+      '<div class="stat"><div class="label">' + label + '</div><div class="num">' + num + '</div></div>'
+    ).join('');
+  }
+
+  function filteredOrders() {
+    const q = searchInput.value.trim().toLowerCase();
+    const status = statusFilter.value;
+    return orders.filter(o => {
+      if (status && o.status !== status) return false;
+      if (!q) return true;
+      const hay = [
+        o.orderNumber,
+        o.customer?.name,
+        o.customer?.email,
+        o.customer?.city,
+        o.customer?.state
+      ].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function renderTable() {
+    const list = filteredOrders();
+    renderStats(orders);
+    if (!list.length) {
+      content.innerHTML = '<div class="empty">No orders match your filters.</div>';
+      return;
+    }
+    content.innerHTML = '<table><thead><tr>' +
+      '<th>Order</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Placed</th>' +
+      '</tr></thead><tbody>' +
+      list.map(o => {
+        const itemsHtml = (o.items || []).map(item => {
+          const img = item.imageUrl
+            ? '<img class="thumb" src="' + item.imageUrl + '" alt="">'
+            : '';
+          return img + item.qty + '× ' + item.name;
+        }).join('<br>');
+        return '<tr>' +
+          '<td><strong>' + o.orderNumber + '</strong></td>' +
+          '<td>' + (o.customer?.name || '—') + '<br><span style="color:var(--ink-soft);font-size:13px">' + (o.customer?.email || '') + '</span></td>' +
+          '<td class="items">' + itemsHtml + '</td>' +
+          '<td>' + formatMoney(o.total) + '</td>' +
+          '<td><select data-order="' + o.orderNumber + '" class="status-select">' +
+            STATUS_OPTIONS.map(s =>
+              '<option value="' + s + '"' + (o.status === s ? ' selected' : '') + '>' + s.replace(/_/g, ' ') + '</option>'
+            ).join('') +
+          '</select></td>' +
+          '<td>' + formatDate(o.createdAt) + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table>';
+
+    content.querySelectorAll('.status-select').forEach(sel => {
+      sel.addEventListener('change', () => updateStatus(sel.dataset.order, sel.value, sel));
+    });
+  }
+
+  async function updateStatus(orderNumber, status, selectEl) {
+    const prev = orders.find(o => o.orderNumber === orderNumber)?.status;
+    selectEl.disabled = true;
+    try {
+      const { res, data } = await fetchJson('/api/admin/orders/' + encodeURIComponent(orderNumber), {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders()
+        },
+        body: JSON.stringify({ status })
+      });
+      if (!res.ok) throw new Error(data.error || 'Update failed.');
+      const idx = orders.findIndex(o => o.orderNumber === orderNumber);
+      if (idx >= 0) orders[idx] = data;
+      renderTable();
+    } catch (err) {
+      alert(err.message);
+      if (prev) selectEl.value = prev;
+    } finally {
+      selectEl.disabled = false;
+    }
+  }
+
+  async function loadOrders() {
+    try {
+      const { res, data } = await fetchJson('/api/admin/orders', {
+        headers: authHeaders()
+      });
+      if (res.status === 401) {
+        logout();
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || 'Could not load orders.');
+      orders = data;
+      renderTable();
+    } catch (err) {
+      content.innerHTML = '<div class="error-box">' + err.message + '</div>';
+    }
+  }
+
+  searchInput.addEventListener('input', renderTable);
+  statusFilter.addEventListener('change', renderTable);
+  loadOrders();
+})();
+</script>
+</body>
+</html>

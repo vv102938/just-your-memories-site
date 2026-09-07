@@ -9,37 +9,63 @@ function isMailConfigured() {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
 }
 
+function getSmtpPort() {
+  return Number(process.env.SMTP_PORT || 587);
+}
+
 function getTransporter() {
   if (!isMailConfigured()) return null;
   if (!transporter) {
+    const port = getSmtpPort();
     transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: process.env.SMTP_SECURE === 'true',
-      pool: true,
-      maxConnections: 2,
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 15_000,
+      port,
+      secure: port === 465 || process.env.SMTP_SECURE === 'true',
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
-      }
+      },
+      connectionTimeout: 15_000,
+      greetingTimeout: 15_000,
+      socketTimeout: 20_000
+    });
+
+    transporter.on('error', (err) => {
+      console.error('SMTP transporter error:', err.message);
     });
   }
   return transporter;
 }
 
-function sendInBackground(task, label) {
-  Promise.resolve()
-    .then(task)
-    .catch((err) => console.error(`${label} failed:`, err.message));
+function logMailError(label, err) {
+  console.error(`${label} failed:`, err.message);
+  if (err.response) {
+    console.error(`${label} SMTP response:`, err.response);
+  }
+  if (err.code) {
+    console.error(`${label} error code:`, err.code);
+  }
 }
 
 async function warmMailConnection() {
   const transport = getTransporter();
-  if (!transport) return;
+  if (!transport) return false;
   await transport.verify();
+  return true;
+}
+
+async function getMailStatus() {
+  if (!isMailConfigured()) {
+    return { configured: false, ready: false };
+  }
+
+  try {
+    await warmMailConnection();
+    return { configured: true, ready: true };
+  } catch (err) {
+    logMailError('SMTP verify', err);
+    return { configured: true, ready: false, error: err.message };
+  }
 }
 
 function buildConfirmationEmail(order, confirmUrl) {
@@ -126,10 +152,15 @@ async function sendOrderConfirmationEmail(order) {
     return false;
   }
 
-  const confirmUrl = `${getSiteUrl()}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
-  const message = buildConfirmationEmail(order, confirmUrl);
-  await transport.sendMail(message);
-  return true;
+  try {
+    const confirmUrl = `${getSiteUrl()}/confirm-order.html?token=${encodeURIComponent(order.confirmationToken)}`;
+    const message = buildConfirmationEmail(order, confirmUrl);
+    await transport.sendMail(message);
+    return true;
+  } catch (err) {
+    logMailError(`Order confirmation email (${order.orderNumber})`, err);
+    return false;
+  }
 }
 
 function buildSignupVerificationEmail(name, email, code) {
@@ -182,35 +213,21 @@ async function sendSignupVerificationEmail(name, email, code) {
     return false;
   }
 
-  const message = buildSignupVerificationEmail(name, email, code);
-  await transport.sendMail(message);
-  return true;
-}
-
-function queueSignupVerificationEmail(name, email, code) {
-  if (!isMailConfigured()) return false;
-  sendInBackground(
-    () => sendSignupVerificationEmail(name, email, code),
-    'Signup verification email'
-  );
-  return true;
-}
-
-function queueOrderConfirmationEmail(order) {
-  if (!isMailConfigured()) return false;
-  sendInBackground(
-    () => sendOrderConfirmationEmail(order),
-    `Order confirmation email (${order.orderNumber})`
-  );
-  return true;
+  try {
+    const message = buildSignupVerificationEmail(name, email, code);
+    await transport.sendMail(message);
+    return true;
+  } catch (err) {
+    logMailError(`Signup verification email (${email})`, err);
+    return false;
+  }
 }
 
 module.exports = {
   isMailConfigured,
   sendOrderConfirmationEmail,
   sendSignupVerificationEmail,
-  queueOrderConfirmationEmail,
-  queueSignupVerificationEmail,
   warmMailConnection,
+  getMailStatus,
   getSiteUrl
 };

@@ -44,19 +44,16 @@ async function saveOrderItemImage(source, orderNumber, itemIndex) {
 }
 
 async function saveOrderItemImages(items, orderNumber) {
-  const saved = [];
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
+  return Promise.all(items.map(async (item, i) => {
     const imageUrl = await saveOrderItemImage(item.image, orderNumber, i);
-    saved.push({
+    return {
       productId: item.productId,
       name: item.name,
       price: item.price,
       qty: item.qty,
       imageUrl: imageUrl || null
-    });
-  }
-  return saved;
+    };
+  }));
 }
 
 module.exports = {

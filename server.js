@@ -8,7 +8,7 @@ const zipcodes = require('zipcodes');
 const mongoose = require('mongoose');
 const { connectDatabase, disconnectDatabase } = require('./db/connect');
 const { User, Order, SignupVerification } = require('./models');
-const { sendOrderConfirmationEmail, sendSignupVerificationEmail, isMailConfigured } = require('./email');
+const { isMailConfigured, queueOrderConfirmationEmail, queueSignupVerificationEmail, warmMailConnection } = require('./email');
 const { ensureUploadsDir, saveOrderItemImages } = require('./images');
 const {
   hashPassword,
@@ -329,7 +329,9 @@ async function resolveUserShipping(user) {
   };
 
   if (user._id) {
-    await User.updateOne({ _id: user._id }, { $set: { shipping } });
+    User.updateOne({ _id: user._id }, { $set: { shipping } }).catch((err) => {
+      console.error('Could not backfill saved shipping:', err.message);
+    });
   }
 
   return shipping;
@@ -380,8 +382,7 @@ app.post('/api/auth/signup', async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    const sent = await sendSignupVerificationEmail(validated.name, validated.email, code);
-    if (!sent) {
+    if (!queueSignupVerificationEmail(validated.name, validated.email, code)) {
       return res.status(503).json({ error: 'Could not send the verification email. Try again in a moment.' });
     }
 
@@ -521,8 +522,7 @@ app.post('/api/auth/signup/resend', async (req, res) => {
       }
     );
 
-    const sent = await sendSignupVerificationEmail(pending.name, email, code);
-    if (!sent) {
+    if (!queueSignupVerificationEmail(pending.name, email, code)) {
       return res.status(503).json({ error: 'Could not send the verification email. Try again in a moment.' });
     }
 
@@ -856,13 +856,7 @@ app.post('/api/orders', async (req, res) => {
     });
 
     const orderPlain = asPlain(order);
-
-    let confirmationEmailSent = false;
-    try {
-      confirmationEmailSent = await sendOrderConfirmationEmail(orderPlain);
-    } catch (mailErr) {
-      console.error('Confirmation email failed:', mailErr.message);
-    }
+    const confirmationEmailSent = queueOrderConfirmationEmail(orderPlain);
 
     res.status(201).json({
       ...sanitizeOrder(orderPlain),
@@ -957,11 +951,6 @@ app.use(express.static(__dirname));
 async function start() {
   await ensureUploadsDir();
   await connectDatabase(MONGODB_URI);
-  await Promise.all([
-    Order.syncIndexes(),
-    User.syncIndexes(),
-    SignupVerification.syncIndexes()
-  ]);
 
   const server = app.listen(PORT, () => {
     console.log(`Just Your Memories running at ${getSiteUrl()}`);
@@ -970,7 +959,19 @@ async function start() {
     }
     if (!isMailConfigured()) {
       console.warn('SMTP not configured — confirmation emails will not be sent until SMTP_HOST, SMTP_USER, and SMTP_PASS are set.');
+    } else {
+      warmMailConnection().catch((err) => {
+        console.warn('SMTP warmup failed — first email may be slower:', err.message);
+      });
     }
+  });
+
+  Promise.all([
+    Order.syncIndexes(),
+    User.syncIndexes(),
+    SignupVerification.syncIndexes()
+  ]).catch((err) => {
+    console.error('Index sync failed:', err.message);
   });
 
   server.on('error', (err) => {

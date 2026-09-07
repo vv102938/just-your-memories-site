@@ -16,6 +16,11 @@ function getTransporter() {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === 'true',
+      pool: true,
+      maxConnections: 2,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
@@ -23,6 +28,18 @@ function getTransporter() {
     });
   }
   return transporter;
+}
+
+function sendInBackground(task, label) {
+  Promise.resolve()
+    .then(task)
+    .catch((err) => console.error(`${label} failed:`, err.message));
+}
+
+async function warmMailConnection() {
+  const transport = getTransporter();
+  if (!transport) return;
+  await transport.verify();
 }
 
 function buildConfirmationEmail(order, confirmUrl) {
@@ -170,9 +187,30 @@ async function sendSignupVerificationEmail(name, email, code) {
   return true;
 }
 
+function queueSignupVerificationEmail(name, email, code) {
+  if (!isMailConfigured()) return false;
+  sendInBackground(
+    () => sendSignupVerificationEmail(name, email, code),
+    'Signup verification email'
+  );
+  return true;
+}
+
+function queueOrderConfirmationEmail(order) {
+  if (!isMailConfigured()) return false;
+  sendInBackground(
+    () => sendOrderConfirmationEmail(order),
+    `Order confirmation email (${order.orderNumber})`
+  );
+  return true;
+}
+
 module.exports = {
   isMailConfigured,
   sendOrderConfirmationEmail,
   sendSignupVerificationEmail,
+  queueOrderConfirmationEmail,
+  queueSignupVerificationEmail,
+  warmMailConnection,
   getSiteUrl
 };

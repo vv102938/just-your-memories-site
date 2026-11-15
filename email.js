@@ -22,9 +22,25 @@ function isMailConfigured() {
 function getMailFrom() {
   const configured = trimEnv('MAIL_FROM');
   if (configured) return configured;
+  if (isResendConfigured()) {
+    return '"Just Your Memories" <notifications@justyourmemories.company>';
+  }
   const smtpUser = trimEnv('SMTP_USER');
   if (smtpUser) return `"Just Your Memories" <${smtpUser}>`;
   return '"Just Your Memories" <justyourmemories@gmail.com>';
+}
+
+function resendFromAddressError(from) {
+  if (!isResendConfigured()) return null;
+  const match = String(from).match(/<([^>]+)>/);
+  const email = (match ? match[1] : from).trim().toLowerCase();
+  if (email.endsWith('@gmail.com') || email.endsWith('@googlemail.com')) {
+    return (
+      'Resend cannot send from Gmail addresses. Set MAIL_FROM to an address on your verified domain, ' +
+      'e.g. Just Your Memories <notifications@justyourmemories.company>'
+    );
+  }
+  return null;
 }
 
 function getSmtpPort() {
@@ -103,9 +119,15 @@ async function sendViaSmtp(message, label) {
 async function sendViaResend(message, label) {
   if (!isResendConfigured()) return false;
 
+  const from = getMailFrom();
+  const fromErr = resendFromAddressError(from);
+  if (fromErr) {
+    throw new Error(fromErr);
+  }
+
   const resend = new Resend(trimEnv('RESEND_API_KEY'));
   const { error } = await resend.emails.send({
-    from: getMailFrom(),
+    from,
     to: message.to,
     subject: message.subject,
     html: message.html,

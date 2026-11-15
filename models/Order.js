@@ -32,7 +32,7 @@ const orderSchema = new mongoose.Schema(
       enum: ['awaiting_confirmation', 'pending', 'printing', 'shipped', 'completed', 'cancelled']
     },
     emailConfirmed: { type: Boolean, default: false },
-    confirmationToken: { type: String, sparse: true },
+    confirmationToken: { type: String },
     customer: { type: customerSchema, required: true },
     items: { type: [orderItemSchema], required: true },
     subtotal: { type: Number, required: true },
